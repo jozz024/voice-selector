@@ -6,8 +6,27 @@ extern crate lazy_static;
 use arcropolis_api::*;
 use percent_encoding::percent_decode_str;
 use skyline_web::{ramhorns, Webpage};
+use std::path::Path;
 use std::marker::PhantomData;
 use std::{collections::HashMap, sync::Mutex};
+use bntx;
+use std::io::{Read, Seek};
+use std::io::SeekFrom;
+use std::io::Cursor;
+use binread::BinRead;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum Event {
+    ArcFilesystemMounted,
+    ModFilesystemMounted,
+}
+
+pub type EventCallbackFn = extern "C" fn(Event);
+
+extern "C" {
+    fn arcrop_register_event_callback(ty: Event, callback: EventCallbackFn);
+}
 
 static HTML_TEXT: &str = include_str!("index.html");
 static CSS_TEXT: &str = include_str!("style.css");
@@ -152,30 +171,36 @@ lazy_static! {
 
 #[arc_callback]
 fn arc_file_callback(hash: u64, data: &mut [u8]) -> Option<usize> {
-    let path;
-
+    let path_;
     let lang = VOICES.lock().unwrap().get(&hash).unwrap().lang;
+    let arc_path = VOICES.lock().unwrap().get(&hash).unwrap().file_name.clone();
 
     if lang == VoiceRegion::Eng {
-        path = format!(
-            "rom:/VoiceSelector/eng/{}",
-            &VOICES.lock().unwrap().get(&hash).unwrap().file_name
+        let region = "us_en";
+        let region_nus3audio = format!("+{}.nus3audio", region);
+        path_ = format!(
+            "arc:/{}",
+            arc_path.replace(".nus3audio", &region_nus3audio)
         );
     } else if lang == VoiceRegion::Jp {
-        path = format!(
-            "rom:/VoiceSelector/jp/{}",
-            &VOICES.lock().unwrap().get(&hash).unwrap().file_name
+        let region = "ja_jp";
+        let region_nus3audio = format!("+{}.nus3audio", region);
+        path_ = format!(
+            "arc:/{}",
+            arc_path.replace(".nus3audio", &region_nus3audio)
         );
     } else {
-        path = format!(
-            "rom:/VoiceSelector/default/{}",
-            &VOICES.lock().unwrap().get(&hash).unwrap().file_name
+        let region = "us_en";
+        let region_nus3audio = format!("+{}.nus3audio", region);
+        path_ = format!(
+            "arc:/{}",
+            arc_path.replace(".nus3audio", &region_nus3audio)
         );
     }
 
-    println!("{}", path);
+    println!("{}", path_);
 
-    match std::fs::read(path) {
+    match std::fs::read(path_) {
         Ok(file) => {
             data[..file.len()].copy_from_slice(&file);
 
@@ -184,22 +209,35 @@ fn arc_file_callback(hash: u64, data: &mut [u8]) -> Option<usize> {
         Err(_err) => None,
     }
 }
+fn write_all_pngs() {
+    let stock_icon_path = "arc:/ui/replace/chara/chara_2";
 
-fn biggest_voice_file_size(vc_file: &str) -> usize {
-    let eng_size = match std::fs::read(format!("rom:/VoiceSelector/eng/{}", vc_file)) {
-        Ok(file) => file.len() as usize,
-        Err(_err) => 1 as usize,
-    };
-    let jp_size = match std::fs::read(format!("rom:/VoiceSelector/jp/{}", vc_file)) {
-        Ok(file) => file.len() as usize,
-        Err(_err) => 1 as usize,
-    };
-    let og_size = match std::fs::read(format!("rom:/VoiceSelector/default/{}", vc_file)) {
-        Ok(file) => file.len() as usize,
-        Err(_err) => 1 as usize,
-    };
+    for character in FIGHTERS {
 
-    std::cmp::max(std::cmp::max(eng_size, jp_size), og_size)
+        let realpath = format!("{}/chara_2_{}_00.bntx", stock_icon_path, character);
+        let png_path = "sd:/atmosphere/contents/01006a800016e000/manual_html/html-document/contents.htdocs/img/bntx/";
+
+        println!("{}", realpath);
+
+        match std::fs::read(realpath) {
+            Ok(file) => {
+
+                if !Path::new(&png_path).is_dir() {
+                    std::fs::create_dir_all(&png_path);
+                }
+
+                let mut cursor = Cursor::new(file);
+
+                let mut bntx_file = bntx::BntxFile::read(&mut cursor).unwrap();
+
+                let to_write = format!("sd:/atmosphere/contents/01006a800016e000/manual_html/html-document/contents.htdocs/img/bntx/chara_2_{}_00.png", character);
+
+                let img = bntx_file.to_image();
+                img.save(to_write);
+            }
+            Err(_err) => (),
+        };
+    }
 }
 
 #[derive(ramhorns::Content)]
@@ -293,9 +331,7 @@ pub fn show_menu() {
 
     }
 }
-
-#[skyline::main(name = "voice-selector")]
-pub fn main() {
+pub extern "C" fn main_real(event: Event) {
     for x in FIGHTERS {
         CHARA_VC_MAP
             .lock()
@@ -306,25 +342,22 @@ pub fn main() {
 
         for y in 0..8 {
             let callback_file = format!("vc_{}_c0{}.nus3audio", x, y);
-            let path = format!("{}{}", VOICE_PATH, &callback_file);
-            let hash = hash40(&path);
-            let size = biggest_voice_file_size(&vc_file);
+            let path_ = format!("{}{}", VOICE_PATH, &callback_file);
+            let hash = hash40(&path_);
 
-            if size <= 0 {
-                continue;
-            }
-
-            arc_file_callback::install(hash, size);
+            arc_file_callback::install(hash, 10000000);
             VOICES.lock().unwrap().insert(
                 hash.as_u64(),
                 FileInfo {
-                    file_name: vc_file.to_string(),
+                    file_name: path_.to_string(),
                     lang: VoiceRegion::Default,
                     code_name: x.to_string(),
                 },
             );
         }
     }
+
+    write_all_pngs();
 
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(10));
@@ -371,4 +404,10 @@ pub fn main() {
             toggle_flag = false;
         }
     });
+}
+#[skyline::main(name = "voice-selector")]
+pub fn main() {
+    unsafe {
+        arcrop_register_event_callback(Event::ArcFilesystemMounted, main_real);
+    }
 }

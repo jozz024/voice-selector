@@ -16,6 +16,8 @@ arcropolis-api = { git = "https://github.com/Raytwo/arcropolis_api" }
 lazy_static = "1.4.0"
 skyline-web = { git = "https://github.com/skyline-rs/skyline-web" }
 percent-encoding = "2.1.0"
+bntx = { git = "https://github.com/ScanMountGoat/bntx" }
+binread = "2.1.1"
 
 [profile.dev]
 panic = "abort"
